@@ -26,6 +26,7 @@ import puppeteer from "puppeteer";
         totalHeight += distance;
 
         if (totalHeight >= document.body.scrollHeight) {
+          // if (totalHeight >= 3000) {
           clearInterval(timer);
           resolve();
         }
@@ -35,13 +36,42 @@ import puppeteer from "puppeteer";
 
   // 스크롤 후, 클래스가 'position_card_info_title'인 모든 요소의 innerText 가져오기
   const jobTitles = await page.evaluate(() => {
-    const elements = document.querySelectorAll(".position_card_info_title");
+    const elements = document.querySelectorAll(".sc-15ba67b8-1.iFMgIl");
+    console.log(elements);
     return Array.from(elements).map((el) => el.innerText);
   });
 
   // 결과 출력
-  console.log(jobTitles);
 
+  const skillMap = new Map();
+  const result = jobTitles
+    .map((item) => item.split("\n"))
+    .flat()
+    .map((item2) => item2.replace("· ", ""));
+
+  result.map((item) => {
+    if (skillMap.has(item)) {
+      skillMap.set(item, skillMap.get(item) + 1);
+    } else {
+      skillMap.set(item, 1);
+    }
+  });
+
+  const total = Array.from(skillMap.values()).reduce(
+    (sum, count) => sum + count,
+    0
+  );
+
+  // 각 기술의 비율 구하기
+  const percentageMap = new Map(
+    Array.from(skillMap.entries()).map(([key, count]) => [
+      key,
+      ((count / total) * 100).toFixed(1),
+    ])
+  );
+
+  // 비율 출력
+  console.log(percentageMap);
   // 브라우저 종료
   await browser.close();
 })();
