@@ -1,6 +1,8 @@
 import puppeteer from "puppeteer";
-
+import mysql from "mysql2/promise";
+import { dbConfig } from "./db.config.js";
 (async () => {
+  const connection = await mysql.createConnection(dbConfig);
   // 브라우저 실행
   const browser = await puppeteer.launch({ headless: false });
   const page = await browser.newPage();
@@ -25,16 +27,14 @@ import puppeteer from "puppeteer";
         window.scrollBy(0, distance);
         totalHeight += distance;
 
-        // if (totalHeight >= document.body.scrollHeight) {
-        if (totalHeight >= 100) {
-          // if (totalHeight >= 3000) {
+        if (totalHeight >= document.body.scrollHeight) {
+          // if (totalHeight >= 100) {
           clearInterval(timer);
           resolve();
         }
       }, 100); // 100ms 간격으로 스크롤
     });
   });
-
   const jobListings = await page.evaluate(() => {
     // 모든 공고를 가져오기
     const listings = Array.from(document.querySelectorAll("a[target='_self']"));
@@ -46,7 +46,7 @@ import puppeteer from "puppeteer";
       ).innerText;
 
       // 링크
-      const link = listing.getAttribute("href");
+      const link = document.location.origin + listing.getAttribute("href");
 
       // 회사 이름
       const company = listing.querySelector(
@@ -70,8 +70,23 @@ import puppeteer from "puppeteer";
     });
   });
 
-  console.log(jobListings);
+  //  document 객체에 담기는 내용(dom)이 원래는 스크롤 실행 전의 내용이었다가
+  //  스크롤 함수가 실행되면서 document 객체에 전체 페이지의 요소가 담기게 됨
 
+  for (const job of jobListings) {
+    const { title, link, company, skills } = job;
+
+    // skills 배열을 문자열로 변환 (예: 'skill1, skill2, skill3')
+    const skillsString = skills.join(", ");
+
+    const query = `
+      INSERT INTO job_listings (title, link, company, skills)
+      VALUES (?, ?, ?, ?)
+    `;
+    await connection.execute(query, [title, link, company, skillsString]);
+  }
+
+  console.log("데이터베이스에 삽입 완료");
   // 결과 출력
 
   // const skillMap = new Map();
@@ -104,4 +119,5 @@ import puppeteer from "puppeteer";
   // console.log(percentageMap);
   // 브라우저 종료
   await browser.close();
+  await connection.end();
 })();
