@@ -40,8 +40,8 @@ app.post("/crawl", async (req, res) => {
   `);
 
   // 오늘 날짜에 기반한 skills_frequency 테이블 이름 생성
-  // const today = new Date().toISOString().slice(0, 10).replace(/-/g, "_");
-  const today = "2024_10_26";
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, "_");
+  // const today = "2024_10_26";
 
   // jobCategory와 오늘 날짜 조합으로 skills_frequency 테이블 생성
   await connection.execute(`
@@ -101,8 +101,8 @@ app.post("/crawl", async (req, res) => {
     });
   });
 
-  // const date = new Date().toISOString().slice(0, 10); // 오늘 날짜 (YYYY-MM-DD)
-  const date = "2024-10-26";
+  const date = new Date().toISOString().slice(0, 10); // 오늘 날짜 (YYYY-MM-DD)
+  // const date = "2024-10-26";
   for (const job of jobListings) {
     const { id, title, link, company, skills } = job;
     const skillsString = skills.join(", ");
