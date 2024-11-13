@@ -2,13 +2,19 @@ import express from "express";
 import mysql from "mysql2/promise";
 import puppeteer from "puppeteer";
 import { dbConfig } from "./db.config.js";
-
+import cors from "cors";
 const app = express();
-const PORT = 3000;
+const PORT = 5555;
 
 // JSON 파싱을 위한 미들웨어
 app.use(express.json());
-
+app.use(
+  cors({
+    origin: "http://localhost", // 특정 도메인만 허용
+    methods: ["GET", "POST"], // 허용할 HTTP 메소드
+    allowedHeaders: ["Content-Type", "Authorization"], // 허용할 헤더
+  })
+);
 // MySQL 연결
 const connectToDatabase = async () => {
   const connection = await mysql.createConnection(dbConfig);
