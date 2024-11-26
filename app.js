@@ -10,7 +10,7 @@ const PORT = 5555;
 app.use(express.json());
 app.use(
   cors({
-    origin: "http://localhost", // 특정 도메인만 허용
+    origin: "*", // 특정 도메인만 허용
     methods: ["GET", "POST"], // 허용할 HTTP 메소드
     allowedHeaders: ["Content-Type", "Authorization"], // 허용할 헤더
   })
