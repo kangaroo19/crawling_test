@@ -3,35 +3,34 @@ import mysql from "mysql2/promise";
 import puppeteer from "puppeteer";
 import { dbConfig } from "./db.config.js";
 import cors from "cors";
+
 const app = express();
 const PORT = 5555;
+const positionList = new Map([
+  [1, "backend"],
+  [2, "frontend"],
+  [4, "android"],
+  [16, "ios"],
+]);
 
 // JSON 파싱을 위한 미들웨어
 app.use(express.json());
 app.use(
   cors({
-    origin: "*", // 특정 도메인만 허용
-    methods: ["GET", "POST"], // 허용할 HTTP 메소드
-    allowedHeaders: ["Content-Type", "Authorization"], // 허용할 헤더
+    origin: "*",
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
-// MySQL 연결
+
+// MySQL 연결 함수
 const connectToDatabase = async () => {
   const connection = await mysql.createConnection(dbConfig);
   return connection;
 };
 
-// 크롤링 후 데이터 저장 API
-app.post("/crawl", async (req, res) => {
-  const { jobCategory } = req.body; // jobCategory: 1, 2, 4, 16 등의 값을 받음
-
-  if (!jobCategory) {
-    return res.status(400).send({ error: "jobCategory is required" });
-  }
-
-  const connection = await connectToDatabase();
-
-  // job_listings 테이블 생성 로직
+// job_listings 테이블 생성 함수
+async function createJobListingsTable(connection) {
   await connection.execute(`
     CREATE TABLE IF NOT EXISTS job_listings (
       id VARCHAR(255),
@@ -44,20 +43,64 @@ app.post("/crawl", async (req, res) => {
       PRIMARY KEY (id, date)
     )
   `);
+}
 
-  // 오늘 날짜에 기반한 skills_frequency 테이블 이름 생성
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, "_");
-  // const today = "2024_10_26";
+// 오래된 컬럼 관리 로직
+async function manageColumns(connection, tableName, today) {
+  const newColumn = today.replace(/-/g, "_");
 
-  // jobCategory와 오늘 날짜 조합으로 skills_frequency 테이블 생성
+  // 1. 테이블의 현재 컬럼 목록 가져오기
+  const [columns] = await connection.execute(`
+    SHOW COLUMNS FROM ${tableName};
+  `);
+
+  // 2. 날짜 컬럼만 필터링 (YYYY_MM_DD 형식)
+  const dateColumns = columns
+    .map((col) => col.Field)
+    .filter((field) => /^\d{4}_\d{2}_\d{2}$/.test(field));
+
+  // 3. 오래된 컬럼 관리 (최대 10개 유지)
+  if (dateColumns.length >= 10) {
+    const oldestColumn = dateColumns.sort()[0];
+    await connection.execute(`
+      ALTER TABLE ${tableName} DROP COLUMN ${oldestColumn};
+    `);
+  }
+
+  // 4. 새 컬럼이 없으면 추가
+  const columnExists = dateColumns.includes(newColumn);
+  if (!columnExists) {
+    await connection.execute(`
+      ALTER TABLE ${tableName} ADD COLUMN ${newColumn} INT DEFAULT 0;
+    `);
+  }
+}
+
+// 크롤링 및 데이터 저장 API
+app.post("/crawl", async (req, res) => {
+  const { jobCategory } = req.body;
+  const type = positionList.get(jobCategory);
+
+  if (!jobCategory || !type) {
+    return res.status(400).send({ error: "Invalid or missing jobCategory" });
+  }
+
+  const connection = await connectToDatabase();
+
+  // job_listings 테이블 생성
+  await createJobListingsTable(connection);
+
+  // skill_progress_backend 테이블 생성
+  const tableName = `skill_progress_${type}`;
   await connection.execute(`
-    CREATE TABLE IF NOT EXISTS skills_frequency_${jobCategory}_${today} (
-      skill_name VARCHAR(255) PRIMARY KEY,
-      count INT DEFAULT 0,
-      frequency DECIMAL(5, 3) DEFAULT 0,
-      date DATE NOT NULL
+    CREATE TABLE IF NOT EXISTS ${tableName} (
+      skill_name VARCHAR(255) PRIMARY KEY
     )
   `);
+
+  // 현재 날짜 컬럼 관리
+  const today = new Date().toISOString().slice(0, 10);
+  await manageColumns(connection, tableName, today);
 
   // Puppeteer를 이용한 크롤링 로직
   const browser = await puppeteer.launch({ headless: false });
@@ -68,6 +111,7 @@ app.post("/crawl", async (req, res) => {
   );
   await page.waitForSelector(".fJjUyN");
 
+  // 페이지 스크롤
   await page.evaluate(async () => {
     await new Promise((resolve) => {
       let totalHeight = 0;
@@ -84,6 +128,7 @@ app.post("/crawl", async (req, res) => {
     });
   });
 
+  // 크롤링 데이터 추출
   const jobListings = await page.evaluate(() => {
     const listings = Array.from(document.querySelectorAll("a[target='_self']"));
 
@@ -102,54 +147,30 @@ app.post("/crawl", async (req, res) => {
         .filter((skill) => skill);
 
       const id = link.split("/").pop();
-
       return { id, title, link, company, skills };
     });
   });
 
-  const date = new Date().toISOString().slice(0, 10); // 오늘 날짜 (YYYY-MM-DD)
-  // const date = "2024-10-26";
+  // 데이터 저장
   for (const job of jobListings) {
-    const { id, title, link, company, skills } = job;
-    const skillsString = skills.join(", ");
-    const type = getCategoryType(jobCategory); // jobCategory 값에 따른 타입
+    const { title, link, company, skills } = job;
+    const id = link.split("/").pop();
 
-    // job_listings에 데이터 저장
+    // job_listings 데이터 삽입 또는 업데이트
     await connection.execute(
       `
-      INSERT INTO job_listings (id, title, link, company, skills, type, date)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE title = VALUES(title), link = VALUES(link), company = VALUES(company), skills = VALUES(skills), type = VALUES(type), date = VALUES(date)
-    `,
-      [id, title, link, company, skillsString, type, date]
-    );
-
-    // skills_frequency 테이블에 각 기술 스킬 빈도 저장
-    for (const skill of skills) {
-      await connection.execute(
-        `
-        INSERT INTO skills_frequency_${jobCategory}_${today} (skill_name, count, date)
-        VALUES (?, 1, ?)
-        ON DUPLICATE KEY UPDATE count = count + 1, date = VALUES(date)
+        INSERT INTO job_listings (id, title, link, company, skills, type, date)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          title = VALUES(title),
+          link = VALUES(link),
+          company = VALUES(company),
+          skills = VALUES(skills),
+          type = VALUES(type)
       `,
-        [skill, date]
-      );
-    }
+      [id, title, link, company, skills, type, today]
+    );
   }
-
-  // 빈도 계산
-  const [totalCountRow] = await connection.execute(`
-    SELECT SUM(count) as total_count FROM skills_frequency_${jobCategory}_${today}
-  `);
-  const totalCount = totalCountRow[0].total_count;
-
-  await connection.execute(
-    `
-    UPDATE skills_frequency_${jobCategory}_${today}
-    SET frequency = ROUND((count / ?) * 100, 3)
-  `,
-    [totalCount]
-  );
 
   await browser.close();
   await connection.end();
@@ -157,49 +178,17 @@ app.post("/crawl", async (req, res) => {
   res.send({ message: "크롤링 및 데이터 저장 완료" });
 });
 
-// 데이터 조회 API (특정 날짜 범위 조회)
-app.get("/listings/:from/:to", async (req, res) => {
-  const { from, to } = req.params;
+// 데이터 조회 API
+app.get("/progress/:type", async (req, res) => {
+  const { type } = req.params;
+  const tableName = `skill_progress_${type}`;
+
   const connection = await connectToDatabase();
-
-  const [rows] = await connection.execute(
-    `SELECT * FROM job_listings WHERE date BETWEEN ? AND ?`,
-    [from, to]
-  );
-
+  const [rows] = await connection.execute(`SELECT * FROM ${tableName}`);
   await connection.end();
+
   res.json(rows);
 });
-
-// 특정 기술의 빈도 조회 API (날짜 범위로)
-app.get("/skills-frequency/:jobCategory/:date", async (req, res) => {
-  const { jobCategory, date } = req.params;
-  const formattedDate = date.replace(/-/g, "_");
-  const connection = await connectToDatabase();
-
-  const [rows] = await connection.execute(
-    `SELECT * FROM skills_frequency_${jobCategory}_${formattedDate} ORDER BY count DESC`
-  );
-
-  await connection.end();
-  res.json(rows);
-});
-
-// Helper: jobCategory 값을 타입으로 변환하는 함수
-function getCategoryType(jobCategory) {
-  switch (String(jobCategory)) {
-    case "1":
-      return "백엔드";
-    case "2":
-      return "프론트엔드";
-    case "4":
-      return "안드로이드";
-    case "16":
-      return "iOS";
-    default:
-      return "기타";
-  }
-}
 
 // 서버 실행
 app.listen(PORT, () => {
