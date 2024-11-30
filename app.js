@@ -49,17 +49,17 @@ async function createJobListingsTable(connection) {
 async function manageColumns(connection, tableName, today) {
   const newColumn = today.replace(/-/g, "_");
 
-  // 1. 테이블의 현재 컬럼 목록 가져오기
+  // 테이블의 현재 컬럼 목록 가져오기
   const [columns] = await connection.execute(`
     SHOW COLUMNS FROM ${tableName};
   `);
 
-  // 2. 날짜 컬럼만 필터링 (YYYY_MM_DD 형식)
+  // 날짜 컬럼만 필터링 (YYYY_MM_DD 형식)
   const dateColumns = columns
     .map((col) => col.Field)
     .filter((field) => /^\d{4}_\d{2}_\d{2}$/.test(field));
 
-  // 3. 오래된 컬럼 관리 (최대 10개 유지)
+  // 오래된 컬럼 관리 (최대 10개 유지)
   if (dateColumns.length >= 10) {
     const oldestColumn = dateColumns.sort()[0];
     await connection.execute(`
@@ -67,13 +67,70 @@ async function manageColumns(connection, tableName, today) {
     `);
   }
 
-  // 4. 새 컬럼이 없으면 추가
+  // 새 컬럼이 없으면 추가
   const columnExists = dateColumns.includes(newColumn);
   if (!columnExists) {
     await connection.execute(`
       ALTER TABLE ${tableName} ADD COLUMN ${newColumn} INT DEFAULT 0;
     `);
   }
+}
+
+// 스킬 카운트 및 progress 테이블 업데이트 함수
+// type==> ios , today ==> 2024-11-30
+async function updateSkillProgress(connection, type, today) {
+  const tableName = `skill_progress_${type}`; // 테이블 이름 생성
+  const newColumn = today.replace(/-/g, "_"); // 날짜를 새로운 컬럼 이름으로 변환
+
+  // 1. 테이블이 존재하지 않을 경우 생성
+  await connection.execute(`
+    CREATE TABLE IF NOT EXISTS ${tableName} (
+      skill_name VARCHAR(255) PRIMARY KEY
+    )
+  `);
+
+  // 2. 새로운 날짜 컬럼이 없으면 추가
+  const [columns] = await connection.query(`
+    SHOW COLUMNS FROM ${tableName} LIKE '${newColumn}'
+  `);
+
+  if (columns.length === 0) {
+    await connection.execute(`
+      ALTER TABLE ${tableName} ADD COLUMN ${newColumn} INT DEFAULT 0
+    `);
+  }
+
+  // 3. job_listings 테이블에서 데이터 조회
+  const [rows] = await connection.execute(`
+    SELECT id, title, link, company, skills, type, date
+    FROM job_listings
+  `);
+
+  // 4. 스킬별 등장 횟수 집계
+  const skillCounts = {};
+  rows.forEach((row) => {
+    if (row.skills) {
+      const skillsArray = JSON.parse(row.skills);
+      skillsArray.forEach((skill) => {
+        skillCounts[skill] = (skillCounts[skill] || 0) + 1;
+      });
+    }
+  });
+
+  // 5. 데이터베이스에 데이터 삽입 또는 업데이트
+  for (const [skill, count] of Object.entries(skillCounts)) {
+    // 기존 스킬 데이터가 있으면 업데이트, 없으면 삽입
+    await connection.execute(
+      `
+      INSERT INTO ${tableName} (skill_name, ${newColumn})
+      VALUES (?, ?)
+      ON DUPLICATE KEY UPDATE ${newColumn} = ?
+    `,
+      [skill, count, count]
+    );
+  }
+
+  console.log(`Skill progress updated for ${today}`);
 }
 
 // 크롤링 및 데이터 저장 API
@@ -90,7 +147,7 @@ app.post("/crawl", async (req, res) => {
   // job_listings 테이블 생성
   await createJobListingsTable(connection);
 
-  // skill_progress_backend 테이블 생성
+  // skill_progress 테이블 생성
   const tableName = `skill_progress_${type}`;
   await connection.execute(`
     CREATE TABLE IF NOT EXISTS ${tableName} (
@@ -99,7 +156,7 @@ app.post("/crawl", async (req, res) => {
   `);
 
   // 현재 날짜 컬럼 관리
-  const today = new Date().toISOString().slice(0, 10);
+  const today = '2024-12-01';
   await manageColumns(connection, tableName, today);
 
   // Puppeteer를 이용한 크롤링 로직
@@ -156,7 +213,6 @@ app.post("/crawl", async (req, res) => {
     const { title, link, company, skills } = job;
     const id = link.split("/").pop();
 
-    // job_listings 데이터 삽입 또는 업데이트
     await connection.execute(
       `
         INSERT INTO job_listings (id, title, link, company, skills, type, date)
@@ -168,9 +224,12 @@ app.post("/crawl", async (req, res) => {
           skills = VALUES(skills),
           type = VALUES(type)
       `,
-      [id, title, link, company, skills, type, today]
+      [id, title, link, company, JSON.stringify(skills), type, today]
     );
   }
+
+  // 스킬별 카운트 및 progress 테이블 업데이트
+  await updateSkillProgress(connection, type, today);
 
   await browser.close();
   await connection.end();
